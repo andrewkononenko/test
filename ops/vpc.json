@@ -3,18 +3,28 @@
   "Parameters": {
     "VPCCidr": {
       "Type": "String",
-      "Default": "192.168.0.0/27",
+      "Default": "192.168.0.0/26",
       "Description": "VPC ip addresses range"
     },
-    "VPCSubnet1": {
+    "VPCPrivateSubnet1": {
       "Type": "String",
       "Default": "192.168.0.0/28",
-      "Description": "VPC ip addresses range"
+      "Description": "Private subnet 1 ip addresses range"
     },
-    "VPCSubnet2": {
+    "VPCPrivateSubnet2": {
       "Type": "String",
       "Default": "192.168.0.16/28",
-      "Description": "VPC ip addresses range"
+      "Description": "Private subnet 2 ip addresses range"
+    },
+    "VPCPublicSubnet1": {
+      "Type": "String",
+      "Default": "192.168.0.32/28",
+      "Description": "Public subnet 1 ip addresses range"
+    },
+    "VPCPublicSubnet2": {
+      "Type": "String",
+      "Default": "192.168.0.48/28",
+      "Description": "Public subnet 2 ip addresses range"
     }
   },
   "Resources": {
@@ -28,15 +38,10 @@
         "EnableDnsHostnames": true,
         "Tags": [
           {
-            "Key": "foo",
-            "Value": "bar"
+            "Key": "soap-wrapper-vpc",
+            "Value": "cloud-formation-created"
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "ad2a3d44-7c41-4e4b-b0c8-ac169972e5fe"
-        }
       }
     },
     "VPCInternetGateway": {
@@ -44,18 +49,65 @@
       "Properties": {
         "Tags": [
           {
-            "Key": "internet-gateway",
-            "Value": "vpc"
+            "Key": "soap-wrapper-internet-gateway",
+            "Value": "cloud-formation-created"
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "454b23ba-0b86-445f-af2e-84a8e38203ee"
-        }
       }
     },
-    "VPCRouteTable": {
+    "NATGateway1" : {
+      "Type" : "AWS::EC2::NatGateway",
+      "Properties" : {
+        "AllocationId" : { "Fn::GetAtt" : ["ElasticIP1", "AllocationId"]},
+        "SubnetId" : { "Ref" : "SOAPWrapperPublicSubnet1"},
+        "Tags" : [ {"Key" : "soap-wrapper-nat-gateway1", "Value" : "cloud-formation-created" } ]
+      }
+    },
+    "NATGateway2" : {
+      "Type" : "AWS::EC2::NatGateway",
+      "Properties" : {
+        "AllocationId" : { "Fn::GetAtt" : ["ElasticIP2", "AllocationId"]},
+        "SubnetId" : { "Ref" : "SOAPWrapperPublicSubnet2"},
+        "Tags" : [ {"Key" : "soap-wrapper-nat-gateway2", "Value" : "cloud-formation-created" } ]
+      }
+    },
+    "ElasticIP1" : {
+      "Type" : "AWS::EC2::EIP",
+      "Properties" : {
+        "Domain" : "vpc"
+      }
+    },
+    "ElasticIP2" : {
+      "Type" : "AWS::EC2::EIP",
+      "Properties" : {
+        "Domain" : "vpc"
+      }
+    },
+    "RouteForPrivateSubnet1" : {
+      "Type" : "AWS::EC2::Route",
+      "Properties" : {
+        "RouteTableId" : { "Ref" : "PrivateSubnet1RouteTable" },
+        "DestinationCidrBlock" : "0.0.0.0/0",
+        "NatGatewayId" : { "Ref" : "NATGateway1" }
+      }
+    },
+    "RouteForPrivateSubnet2" : {
+      "Type" : "AWS::EC2::Route",
+      "Properties" : {
+        "RouteTableId" : { "Ref" : "PrivateSubnet2RouteTable" },
+        "DestinationCidrBlock" : "0.0.0.0/0",
+        "NatGatewayId" : { "Ref" : "NATGateway2" }
+      }
+    },
+    "RouteForPublicSubnets" : {
+      "Type" : "AWS::EC2::Route",
+      "Properties" : {
+        "RouteTableId" : { "Ref" : "PublicSubnetsRouteTable" },
+        "DestinationCidrBlock" : "0.0.0.0/0",
+        "GatewayId" : { "Ref" : "VPCInternetGateway" }
+      }
+    },
+    "PublicSubnetsRouteTable": {
       "Type": "AWS::EC2::RouteTable",
       "Properties": {
         "VpcId": {
@@ -63,38 +115,41 @@
         },
         "Tags": [
           {
-            "Key": "vpc-route-table",
-            "Value": "vpc"
+            "Key": "route-table-public-subnets",
+            "Value": "cloud-formation-created"
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "e65187f1-d54a-42f2-a939-32aa7ca4c1b4"
-        }
       }
     },
-    "VPCToInternetRoute": {
-      "Type": "AWS::EC2::Route",
-      "DependsOn": [
-        "VPCInternetGateway"
-      ],
+    "PrivateSubnet1RouteTable": {
+      "Type": "AWS::EC2::RouteTable",
       "Properties": {
-        "RouteTableId": {
-          "Ref": "VPCRouteTable"
+        "VpcId": {
+          "Ref": "SOAPWrapperVPC"
         },
-        "DestinationCidrBlock": "0.0.0.0/0",
-        "GatewayId": {
-          "Ref": "VPCInternetGateway"
-        }
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "b958ddbd-15b2-48a6-a163-abe5b9dc0812"
-        }
+        "Tags": [
+          {
+            "Key": "route-table-private-subnet1",
+            "Value": "cloud-formation-created"
+          }
+        ]
       }
     },
-    "AttachVpnGateway": {
+    "PrivateSubnet2RouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "SOAPWrapperVPC"
+        },
+        "Tags": [
+          {
+            "Key": "route-table-private-subnet2",
+            "Value": "cloud-formation-created"
+          }
+        ]
+      }
+    },
+    "InternetGatewayAttachment": {
       "Type": "AWS::EC2::VPCGatewayAttachment",
       "Properties": {
         "VpcId": {
@@ -103,14 +158,45 @@
         "InternetGatewayId": {
           "Ref": "VPCInternetGateway"
         }
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "b84fe8e8-5874-480a-b0aa-dfe8ac803f3a"
-        }
       }
     },
-    "SOAPWrapperSubnet1": {
+    "SOAPWrapperPrivateSubnet1": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "SOAPWrapperVPC"
+        },
+        "CidrBlock": {
+          "Ref": "VPCPrivateSubnet1"
+        },
+        "AvailabilityZone": "us-west-2a",
+        "Tags": [
+          {
+            "Key": "soap-wrapper-private-subnet1",
+            "Value": "cloud-formation-created"
+          }
+        ]
+      }
+    },
+    "SOAPWrapperPrivateSubnet2": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "SOAPWrapperVPC"
+        },
+        "CidrBlock": {
+          "Ref": "VPCPrivateSubnet2"
+        },
+        "AvailabilityZone": "us-west-2b",
+        "Tags": [
+          {
+            "Key": "soap-wrapper-private-subnet2",
+            "Value": "cloud-formation-created"
+          }
+        ]
+      }
+    },
+    "SOAPWrapperPublicSubnet1": {
       "Type": "AWS::EC2::Subnet",
       "Properties": {
         "MapPublicIpOnLaunch": true,
@@ -118,23 +204,18 @@
           "Ref": "SOAPWrapperVPC"
         },
         "CidrBlock": {
-          "Ref": "VPCSubnet1"
+          "Ref": "VPCPublicSubnet1"
         },
-        "AvailabilityZone": "us-east-1a",
+        "AvailabilityZone": "us-west-2a",
         "Tags": [
           {
-            "Key": "foo",
-            "Value": "bar"
+            "Key": "soap-wrapper-public-subnet1",
+            "Value": "cloud-formation-created"
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "0ade6398-2a5e-4e2f-9a08-4684bee39bb8"
-        }
       }
     },
-    "SOAPWrapperSubnet2": {
+    "SOAPWrapperPublicSubnet2": {
       "Type": "AWS::EC2::Subnet",
       "Properties": {
         "MapPublicIpOnLaunch": true,
@@ -142,20 +223,15 @@
           "Ref": "SOAPWrapperVPC"
         },
         "CidrBlock": {
-          "Ref": "VPCSubnet2"
+          "Ref": "VPCPublicSubnet2"
         },
-        "AvailabilityZone": "us-east-1b",
+        "AvailabilityZone": "us-west-2b",
         "Tags": [
           {
-            "Key": "foo",
-            "Value": "bar"
+            "Key": "soap-wrapper-public-subnet2",
+            "Value": "cloud-formation-created"
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "6c1259af-5c87-43ab-80f9-b0714fe61006"
-        }
       }
     },
     "LoadBalancer": {
@@ -165,10 +241,10 @@
         "Name": "SOAPWrapperLoadBalancer",
         "Subnets": [
           {
-            "Ref": "SOAPWrapperSubnet1"
+            "Ref": "SOAPWrapperPublicSubnet1"
           },
           {
-            "Ref": "SOAPWrapperSubnet2"
+            "Ref": "SOAPWrapperPublicSubnet2"
           }
         ],
         "SecurityGroups": [
@@ -176,11 +252,6 @@
             "Ref": "LoadBalancerSecurityGroup"
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "ee1bfa72-817d-4d87-bc1c-00a8ca0a2ddb"
-        }
       }
     },
     "LoadBalancerSecurityGroup": {
@@ -193,102 +264,62 @@
         "SecurityGroupIngress": [
           {
             "IpProtocol": "tcp",
-            "FromPort": "80",
-            "ToPort": "80",
-            "CidrIp": "0.0.0.0/0"
-          },
-          {
-            "IpProtocol": "tcp",
             "FromPort": "8080",
             "ToPort": "8080",
             "CidrIp": "0.0.0.0/0"
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "179c570b-3773-4624-bc14-8647bce82b32"
-        }
       }
     },
-    "TargetGroup1": {
+    "TargetGroup": {
       "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
       "DependsOn": "LoadBalancer",
       "Properties": {
-        "Name": "TargetGroup1",
-        "Port": 80,
+        "HealthCheckIntervalSeconds": 25,
+        "HealthCheckProtocol": "HTTP",
+        "HealthCheckTimeoutSeconds": 20,
+        "HealthCheckPath": "/",
+        "HealthCheckPort": 8080,
+        "HealthyThresholdCount": 4,
+        "UnhealthyThresholdCount": 3,
+        "Matcher" : {
+          "HttpCode" : "200"
+        },
+        "TargetType": "ip",
+        "Name": "TargetGroup",
+        "Port": 8080,
         "Protocol": "HTTP",
         "VpcId": {
           "Ref": "SOAPWrapperVPC"
         }
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "0847f061-abc9-461f-8fb1-c917bc07551b"
-        }
       }
     },
-    "LoadBalancerListener1": {
+    "LoadBalancerListener": {
       "Type": "AWS::ElasticLoadBalancingV2::Listener",
       "Properties": {
         "LoadBalancerArn": {
           "Ref": "LoadBalancer"
         },
-        "Port": 80,
+        "Port": 8080,
         "Protocol": "HTTP",
         "DefaultActions": [
           {
             "Type": "forward",
             "TargetGroupArn": {
-              "Ref": "TargetGroup1"
+              "Ref": "TargetGroup"
             }
           }
         ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "5e7990a9-1f3a-4718-9d2a-194ea4afc52a"
-        }
-      }
-    },
-    "ListenerRule1": {
-      "Type": "AWS::ElasticLoadBalancingV2::ListenerRule",
-      "Properties": {
-        "ListenerArn": {
-          "Ref": "LoadBalancerListener1"
-        },
-        "Priority": 1,
-        "Conditions": [
-          {
-            "Field": "path-pattern",
-            "Values": [
-              "/"
-            ]
-          }
-        ],
-        "Actions": [
-          {
-            "TargetGroupArn": {
-              "Ref": "TargetGroup1"
-            },
-            "Type": "forward"
-          }
-        ]
-      },
-      "Metadata": {
-        "AWS::CloudFormation::Designer": {
-          "id": "fc64b26d-ff6b-44d6-8604-6b12ea1ba172"
-        }
       }
     },
     "Subnet1RouteTableAssociation": {
       "Type": "AWS::EC2::SubnetRouteTableAssociation",
       "Properties": {
         "SubnetId": {
-          "Ref": "SOAPWrapperSubnet1"
+          "Ref": "SOAPWrapperPrivateSubnet1"
         },
         "RouteTableId": {
-          "Ref": "VPCRouteTable"
+          "Ref": "PrivateSubnet1RouteTable"
         }
       }
     },
@@ -296,10 +327,32 @@
       "Type": "AWS::EC2::SubnetRouteTableAssociation",
       "Properties": {
         "SubnetId": {
-          "Ref": "SOAPWrapperSubnet2"
+          "Ref": "SOAPWrapperPrivateSubnet2"
         },
         "RouteTableId": {
-          "Ref": "VPCRouteTable"
+          "Ref": "PrivateSubnet2RouteTable"
+        }
+      }
+    },
+    "Subnet3RouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "SOAPWrapperPublicSubnet1"
+        },
+        "RouteTableId": {
+          "Ref": "PublicSubnetsRouteTable"
+        }
+      }
+    },
+    "Subnet4RouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "SOAPWrapperPublicSubnet2"
+        },
+        "RouteTableId": {
+          "Ref": "PublicSubnetsRouteTable"
         }
       }
     }
@@ -307,12 +360,12 @@
   "Outputs": {
     "Subnet1": {
       "Value": {
-        "Ref": "SOAPWrapperSubnet1"
+        "Ref": "SOAPWrapperPrivateSubnet1"
       }
     },
     "Subnet2": {
       "Value": {
-        "Ref": "SOAPWrapperSubnet2"
+        "Ref": "SOAPWrapperPrivateSubnet2"
       }
     },
     "VpcId": {
@@ -332,7 +385,7 @@
     },
     "TargetGroup": {
       "Value": {
-        "Ref": "TargetGroup1"
+        "Ref": "TargetGroup"
       }
     }
   }

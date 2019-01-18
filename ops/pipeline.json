@@ -1,0 +1,410 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Parameters": {
+    "VPCCidr": {
+      "Type": "String",
+      "Default": "192.168.0.0/26",
+      "Description": "VPC ip addresses range"
+    },
+    "VPCPrivateSubnet1": {
+      "Type": "String",
+      "Default": "192.168.0.0/28",
+      "Description": "Private subnet 1 ip addresses range"
+    },
+    "VPCPrivateSubnet2": {
+      "Type": "String",
+      "Default": "192.168.0.16/28",
+      "Description": "Private subnet 2 ip addresses range"
+    },
+    "VPCPublicSubnet1": {
+      "Type": "String",
+      "Default": "192.168.0.32/28",
+      "Description": "Public subnet 1 ip addresses range"
+    },
+    "VPCPublicSubnet2": {
+      "Type": "String",
+      "Default": "192.168.0.48/28",
+      "Description": "Public subnet 2 ip addresses range"
+    }
+  },
+  "Resources": {
+    "CloudWatchLogsGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "SOAPWrapperLogsGroup",
+        "RetentionInDays": 7
+      }
+    },
+    "Repository": {
+      "Type": "AWS::ECR::Repository",
+      "Properties": {
+        "RepositoryName": "soap-wrapper-repository",
+        "RepositoryPolicyText": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "CodeBuildAccess",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "codebuild.amazonaws.com"
+              },
+              "Action": [
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchGetImage",
+                "ecr:BatchCheckLayerAvailability"
+              ]
+            }
+          ]
+        },
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": {
+            "Ref": "ExpireDockerImagesPolicy"
+          },
+        },
+      }
+    },
+    "ExpireDockerImagesPolicy": {
+      "Rules": [
+        {
+          "RulePriority": 1,
+          "Description": "Rule 1",
+          "Selection": {
+            "TagStatus": "any",
+            "CountType": "sinceImagePushed",
+            "CountNumber": 20,
+            "CountUnit": "days"
+          },
+          "Action": {
+            "Type": "expire"
+          }
+        }
+      ]
+    },
+    "BuildJarProject": {
+      "Type": "AWS::CodeBuild::Project",
+      "Properties": {
+        "Name": "BuildJar",
+        "Description": "CloudFormation CodeBuild project",
+        "ServiceRole": "arn:aws:iam::412447797361:role/VPC-Create-Role",
+        "Artifacts": {
+          "Type": "CODEPIPELINE"
+        },
+        "Environment": {
+          "Type": "LINUX_CONTAINER",
+          "ComputeType": "BUILD_GENERAL1_SMALL",
+          "Image": "aws/codebuild/java:openjdk-8"
+        },
+        "Source": {
+          "Type": "CODEPIPELINE",
+          "BuildSpec": "version: 0.2\nphases:\n  build:\n    commands:\n      - mvn clean install\nartifacts:\n  files: \n    - target/test-0.0.1-SNAPSHOT.jar\n    - Dockerfile\n"
+        },
+        "TimeoutInMinutes": 10,
+        "Tags": [
+          {
+            "Key": "eFax-SoapWrapper-CodeBuildProject",
+            "Value": "CloudFrontCreated"
+          }
+        ]
+      }
+    },
+    "BuildImageProject": {
+      "Type": "AWS::CodeBuild::Project",
+      "Properties": {
+        "Name": "BuildDockerImage",
+        "Description": "CloudFormation CodeBuild project",
+        "ServiceRole": "arn:aws:iam::412447797361:role/VPC-Create-Role",
+        "Artifacts": {
+          "Type": "CODEPIPELINE"
+        },
+        "Environment": {
+          "Type": "LINUX_CONTAINER",
+          "ComputeType": "BUILD_GENERAL1_SMALL",
+          "Image": "aws/codebuild/java:openjdk-8",
+          "PrivilegedMode": true,
+          "EnvironmentVariables": [
+            {
+              "Name": "REPOSITORY_URI",
+              "Value": {
+                "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Repository}"
+              }
+            }
+          ]
+        },
+        "Source": {
+          "Type": "CODEPIPELINE",
+          "BuildSpec": "version: 0.2\nphases:\n  install:\n    commands:\n      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2&\n      - timeout 15 sh -c \"until docker info; do echo .; sleep 1; done\"\n  pre_build:\n    commands:\n      - echo $CODEBUILD_SOURCE_VERSION\n      - $(aws ecr get-login --no-include-email)\n      - TAG=\"$(echo $CODEBUILD_SOURCE_VERSION | head -c 8)\"\n      - IMAGE_URI=\"${REPOSITORY_URI}:22\"\n  build:\n    commands:\n      - docker build --tag \"$IMAGE_URI\" .\n  post_build:\n    commands:\n      - docker push \"$IMAGE_URI\"\n      - printf '[{\"name\":\"SOAPWrapper\",\"imageUri\":\"%s\"}]' \"$IMAGE_URI\" > images.json\nartifacts:\n  files: images.json\n"
+        },
+        "TimeoutInMinutes": 10,
+        "Tags": [
+          {
+            "Key": "eFax-SoapWrapper-CodeBuildProject",
+            "Value": "CloudFrontCreated"
+          }
+        ]
+      }
+    },
+    "ECSTaskDefinition": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "ExecutionRoleArn": "arn:aws:iam::412447797361:role/VPC-Create-Role",
+        "ContainerDefinitions": [
+          {
+            "Name": "SOAPWrapper",
+            "Image": "amazon/amazon-ecs-sample",
+            "Essential": true,
+            "PortMappings": [
+              {
+                "ContainerPort": 8080
+              }
+            ],
+            "LogConfiguration":{
+              "LogDriver":"awslogs",
+              "Options":{
+                "awslogs-group":{
+                  "Ref":"CloudWatchLogsGroup"
+                },
+                "awslogs-region":{
+                  "Ref":"AWS::Region"
+                },
+                "awslogs-stream-prefix":"soap-wrapper-logs"
+              }
+            },
+          }
+        ],
+        "RequiresCompatibilities": [
+          "FARGATE"
+        ],
+        "NetworkMode": "awsvpc",
+        "Cpu": "256",
+        "Memory": "512",
+        "Family": "soap-wrapper1"
+      }
+    },
+    "SOAPWrapperECSCluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": "SOAPWrapperECSCluster"
+      }
+    },
+    "SOAPWrapperECSService": {
+      "Type": "AWS::ECS::Service",
+      "Properties": {
+        "TaskDefinition": {
+          "Ref": "ECSTaskDefinition"
+        },
+        "Cluster": {
+          "Ref": "SOAPWrapperECSCluster"
+        },
+        "LoadBalancers": [
+          {
+            "TargetGroupArn": {
+              "Fn::GetAtt": [
+                "VPC",
+                "Outputs.TargetGroup"
+              ]
+            },
+            "ContainerName": "SOAPWrapper",
+            "ContainerPort": 8080
+          }
+        ],
+        "DesiredCount": 2,
+        "LaunchType": "FARGATE",
+        "SchedulingStrategy": "REPLICA",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              {
+                "Fn::GetAtt": [
+                  "VPC",
+                  "Outputs.Subnet1"
+                ]
+              },
+              {
+                "Fn::GetAtt": [
+                  "VPC",
+                  "Outputs.Subnet2"
+                ]
+              }
+            ],
+            "SecurityGroups": [
+              {
+                "Fn::GetAtt": [
+                  "VPC",
+                  "Outputs.LoadBalancerSecurityGroup"
+                ]
+              }
+            ],
+            "AssignPublicIp": "ENABLED"
+          }
+        }
+      }
+    },
+    "VPC": {
+      "Type": "AWS::CloudFormation::Stack",
+      "Properties": {
+        "TemplateURL": {
+          "Fn::Sub": "https://s3.amazonaws.com/test-aws-docker/CloudFormationVPCLoadBalancer2.txt"
+        },
+        "Parameters": {
+          "VPCCidr": {
+            "Ref": "VPCCidr"
+          },
+          "VPCPublicSubnet1": {
+            "Ref": "VPCPublicSubnet1"
+          },
+          "VPCPublicSubnet2": {
+            "Ref": "VPCPublicSubnet2"
+          },
+          "VPCPrivateSubnet1": {
+            "Ref": "VPCPrivateSubnet1"
+          },
+          "VPCPrivateSubnet2": {
+            "Ref": "VPCPrivateSubnet2"
+          }
+        }
+      }
+    },
+    "Pipeline": {
+      "Type": "AWS::CodePipeline::Pipeline",
+      "Properties": {
+        "RoleArn": "arn:aws:iam::412447797361:role/VPC-Create-Role",
+        "ArtifactStore": {
+          "Type": "S3",
+          "Location": "soap-wrapper-bucket"
+        },
+        "Stages": [
+          {
+            "Name": "Source",
+            "Actions": [
+              {
+                "Name": "App",
+                "ActionTypeId": {
+                  "Category": "Source",
+                  "Owner": "ThirdParty",
+                  "Version": 1,
+                  "Provider": "GitHub"
+                },
+                "Configuration": {
+                  "Owner": "andrewkononenko",
+                  "Repo": "test",
+                  "Branch": "master",
+                  "OAuthToken": "f65d4a3bd54193bcad05a3b379fbe91050c4878d"
+                },
+                "OutputArtifacts": [
+                  {
+                    "Name": "App"
+                  }
+                ],
+                "RunOrder": 1
+              }
+            ]
+          },
+          {
+            "Name":"ManualApproval",
+            "Actions":[
+              {
+                "Name":"QA",
+                "ActionTypeId":{
+                  "Category":"Approval",
+                  "Owner":"AWS",
+                  "Version":"1",
+                  "Provider":"Manual"
+                },
+                "RunOrder":1
+              }
+            ]
+          },
+          {
+            "Name": "BuildJar",
+            "Actions": [
+              {
+                "Name": "Build",
+                "ActionTypeId": {
+                  "Category": "Build",
+                  "Owner": "AWS",
+                  "Version": 1,
+                  "Provider": "CodeBuild"
+                },
+                "Configuration": {
+                  "ProjectName": {
+                    "Ref": "BuildJarProject"
+                  }
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "App"
+                  }
+                ],
+                "OutputArtifacts": [
+                  {
+                    "Name": "jar"
+                  }
+                ],
+                "RunOrder": 1
+              }
+            ]
+          },
+          {
+            "Name": "BuildImage",
+            "Actions": [
+              {
+                "Name": "Build",
+                "ActionTypeId": {
+                  "Category": "Build",
+                  "Owner": "AWS",
+                  "Version": 1,
+                  "Provider": "CodeBuild"
+                },
+                "Configuration": {
+                  "ProjectName": {
+                    "Ref": "BuildImageProject"
+                  }
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "jar"
+                  }
+                ],
+                "OutputArtifacts": [
+                  {
+                    "Name": "BuildOutput"
+                  }
+                ],
+                "RunOrder": 1
+              }
+            ]
+          },
+          {
+            "Name": "Deploy",
+            "Actions": [
+              {
+                "Name": "Deploy",
+                "ActionTypeId": {
+                  "Category": "Deploy",
+                  "Owner": "AWS",
+                  "Version": 1,
+                  "Provider": "ECS"
+                },
+                "Configuration": {
+                  "ClusterName": {
+                    "Ref": "SOAPWrapperECSCluster"
+                  },
+                  "ServiceName": {
+                    "Ref": "SOAPWrapperECSService"
+                  },
+                  "FileName": "images.json"
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "BuildOutput"
+                  }
+                ],
+                "RunOrder": 1
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
